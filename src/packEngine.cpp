@@ -222,7 +222,8 @@ int multiPackAndKeepBest(Platform_e platform, const InputBlob* inputArray, int c
 	for (int i=0;i<algoCount;i++)
 	{
 		const ePackingAlgorithm_t packAlgo = blobs[i * count].algo;
-		const Bootstrap* bootstrap = GetRightBootstrap(platform, packAlgo, params.flash, params.IsText());
+		const Bootstrap* bootstrap = GetRightBootstrap(platform, packAlgo,
+			params.flash, params.IsText(), params.libraryMode);
 		if (nullptr == bootstrap)
 			return -1;
 

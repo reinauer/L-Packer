@@ -46,6 +46,7 @@ Options:
         -flash : color flash when depacking
         -hwreg <hex> : flash hw reg (ex -hwreg 8240 (atari) or -hwreg 180 (amiga))
         -data : raw data mode (no executable)
+        -library : pack an Amiga Resident library
         -deflate : include DEFLATE algorithm (by default)
         -zx0 : include ZX0 algorithm (by default)
         -lz4 : include LZ4 algorithm (by default)
@@ -63,6 +64,68 @@ Pack `Colombia.exe` for the 64 KiB demo category and pad the output to 64 KiB wi
 ````
   L-Packer Colombia.exe Colombia_packed.exe -target 64 -pad
 ````
+
+## Amiga libraries
+
+Pack a disk-based Amiga library with a Resident/ROMTag:
+
+```sh
+L-Packer example.library example_packed.library -library
+```
+
+Library mode decompresses and relocates the library, then calls Exec's
+`InitResident()` on its original Resident tag. Both `RTF_AUTOINIT` libraries
+and libraries with custom Resident initialization routines are supported.
+The initializer receives the complete packed segment list, including the
+decompressor hunk, so a conventional expunge routine can return that list
+for `UnLoadSeg()`. The library's normal executable entry is not called.
+
+The first Resident in input segment order must be a relocatable `NT_LIBRARY`
+with a valid name and initialization pointer. Additional Resident tags remain
+in the payload for the library's own initializer to handle, matching RAMLIB's
+selection of the first tag. Devices and libraries without a
+Resident are not supported by this option. Text output, flashing, and raw
+data mode cannot be combined with library mode. All three compression
+algorithms and target-size padding remain available. Ordinary CLI execution
+of the packed library returns an error without initializing it.
+
+Loading relies on RAMLIB's fallback that calls the first segment's entry
+when no Resident is found in the loaded image, passing the segment-list
+BPTR in A0. This path has been verified in the V40 OS source. The entry then
+initializes the decompressed Resident; RAMLIB does not rescan it itself.
+Hunks are still merged by memory type, so libraries that depend on their
+original segment layout need separate compatibility checking.
+
+Keep the original library and test opening, using, closing, expunging, and
+reopening the packed copy on the intended AmigaOS version before replacing
+an installed library. The automated tests below use modeled OS services;
+they do not establish full AmigaOS or physical hardware compatibility.
+
+## Amiga startup regression tests
+
+The Amiga bootstrap preserves the CLI argument length in D0 and argument
+pointer in A0 across decompression, text output, and cache flushing. This
+adds 16 bytes to each Amiga bootstrap.
+
+Build L-Packer, install the optional Python `machine68k` package, then run:
+
+```sh
+python3 tests/amiga_cli.py build/L-Packer
+python3 tests/amiga_library.py build/L-Packer
+```
+
+The test executes all three depackers on an emulated 68000, with and without
+text and flashing. It checks argument registers, entry/return stack, return
+code, relocations, and BSS clearing using stubbed OS calls; no Amiga ROM is
+required.
+
+The library test covers autoinit and custom initialization, failed
+initialization, CHIP and merged ANY-memory Resident placement, callee-saved
+registers, segment-list ownership, CLI rejection, malformed inputs,
+repacking rejection, and target-size padding. The library wrapper adds
+38 bytes over the CLI wrapper before final hunk alignment. Its assembly
+source is `src/amiga_library.asm`; normal builds use the embedded bytes in
+`src/bootstrap.cpp` and do not need a cross-assembler.
 
 ## Versions
 

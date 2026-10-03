@@ -19,5 +19,7 @@ struct	Bootstrap
 	uint32_t size;
 };
 
-const Bootstrap* GetRightBootstrap(Platform_e platform, ePackingAlgorithm_t algo, bool flash, bool text);
+const Bootstrap* GetRightBootstrap(Platform_e platform, ePackingAlgorithm_t algo,
+	bool flash, bool text, bool library = false);
+void PatchAmigaLibraryBootstrap(uint8_t* data, int residentSlot, uint32_t residentOffset);
 bool IsLPackerExecutable(const uint8_t* data, int size, Platform_e platform);

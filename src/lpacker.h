@@ -22,6 +22,7 @@ struct Parameters
 	bool flash = false;
 	int algoMask = 0;
 	bool dataMode = false;
+	bool libraryMode = false;
 	ByteStream text;
 	bool IsText() const { return text.GetSize() > 0; }
 };

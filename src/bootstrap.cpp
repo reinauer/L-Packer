@@ -30,13 +30,44 @@ static const uint8_t sAmigaEntry[] =
 	0x4e, 0xd1,             // jmp (a1)
 };
 
+// Assembled from amiga_library.asm. The library initializer must preserve
+// Exec's callee-saved registers and keep the complete packed segment list.
+static const uint8_t sAmigaLibraryEntry[] =
+{
+	0x43, 0xfa, 0xff, 0xfa, // lea entry-4(pc),a1
+	0x20, 0x08,             // move.l a0,d0
+	0xe5, 0x88,             // lsl.l #2,d0
+	0xb3, 0xc0,             // cmpa.l d0,a1
+	0x67, 0x04,             // beq.s initialize
+	0x70, 0xff, 0x4e, 0x75, // moveq #-1,d0; rts
+	0x48, 0xe7, 0x3f, 0x3e, // movem.l d2-d7/a2-a6,-(sp)
+	0x2f, 0x08,             // move.l a0,-(sp)
+	0x60, 0x00, 0x00, 0x1e, // bra.w depacker
+	0x22, 0x6f, 0x00, 0x04, // movea.l 4(sp),a1 (patched slot)
+	0xd3, 0xfc, 0x12, 0x34, 0x56, 0x78, // adda.l #Resident offset,a1
+	0x50, 0x8f,             // addq.l #8,sp
+	0x22, 0x1f,             // move.l (sp)+,d1
+	0x2c, 0x78, 0x00, 0x04, // movea.l 4.w,a6
+	0x4e, 0xae, 0xff, 0x9a, // jsr InitResident(a6)
+	0x4c, 0xdf, 0x7c, 0xfc, // movem.l (sp)+,d2-d7/a2-a6
+	0x4e, 0x75,             // rts
+};
+
 static void WriteWord(uint8_t* data, int value)
 {
 	data[0] = uint16_t(value) >> 8;
 	data[1] = uint16_t(value) & 255;
 }
 
-static bool WrapAmigaBootstrap(const Bootstrap& source, std::vector<uint8_t>& data)
+void PatchAmigaLibraryBootstrap(uint8_t* data, int residentSlot, uint32_t residentOffset)
+{
+	WriteWord(data + 28, residentSlot == 0 ? 4 : 0);
+	WriteWord(data + 32, residentOffset >> 16);
+	WriteWord(data + 34, residentOffset & 65535);
+}
+
+static bool WrapAmigaBootstrap(const Bootstrap& source, std::vector<uint8_t>& data,
+	bool library = false)
 {
 	// These offsets describe the common loader, before the algorithm-specific
 	// depacker. Validate the instructions so regenerated stubs fail safely.
@@ -53,15 +84,18 @@ static bool WrapAmigaBootstrap(const Bootstrap& source, std::vector<uint8_t>& da
 		memcmp(code + exit, tail, sizeof(tail)) != 0)
 		return false;
 
-	data.assign(sAmigaEntry, sAmigaEntry + sizeof(sAmigaEntry));
+	const uint8_t* entry = library ? sAmigaLibraryEntry : sAmigaEntry;
+	const int entrySize = library ? sizeof(sAmigaLibraryEntry) : sizeof(sAmigaEntry);
+	const int finish = library ? 26 : 6;
+	data.assign(entry, entry + entrySize);
 	data.insert(data.end(), code, code + source.size);
-	uint8_t* body = data.data() + sizeof(sAmigaEntry);
+	uint8_t* body = data.data() + entrySize;
 	// Both LEAs must still find the segment link immediately before the new
 	// entry. All other PC-relative references, including text, move together.
-	WriteWord(body + start + 2, -int(sizeof(sAmigaEntry)) - start - 2);
-	WriteWord(body + reloc + 2, -int(sizeof(sAmigaEntry)) - reloc - 2);
-	WriteWord(body + exit, 0x6000); // bra.w to the restore code at offset 6
-	WriteWord(body + exit + 2, 6 - int(sizeof(sAmigaEntry)) - exit - 2);
+	WriteWord(body + start + 2, -entrySize - start - 2);
+	WriteWord(body + reloc + 2, -entrySize - reloc - 2);
+	WriteWord(body + exit, 0x6000); // bra.w to the restore code
+	WriteWord(body + exit + 2, finish - entrySize - exit - 2);
 	return true;
 }
 
@@ -72,14 +106,14 @@ struct BootstrapTable
 	Bootstrap entries[kBootstrapCount];
 	std::vector<uint8_t> data[kBootstrapCount];
 
-	BootstrapTable()
+	BootstrapTable(bool library = false)
 	{
 		for (int i = 0; i < kBootstrapCount; i++)
 		{
 			entries[i] = sBootstraps[i];
 			if (entries[i].platform != eAmiga)
 				continue;
-			if (!WrapAmigaBootstrap(sBootstraps[i], data[i]))
+			if (!WrapAmigaBootstrap(sBootstraps[i], data[i], library))
 			{
 				entries[i].data = nullptr;
 				continue;
@@ -90,13 +124,17 @@ struct BootstrapTable
 	}
 };
 
-const Bootstrap* GetRightBootstrap(Platform_e platform, ePackingAlgorithm_t algo, bool flash, bool text)
+const Bootstrap* GetRightBootstrap(Platform_e platform, ePackingAlgorithm_t algo,
+	bool flash, bool text, bool library)
 {
+	if (library && (platform != eAmiga || flash || text))
+		return nullptr;
 	if (Platform_e::eData == platform)
 		return &sDataBootstrap;
 
 	static const BootstrapTable table;
-	const Bootstrap* it = table.entries;
+	static const BootstrapTable libraryTable(true);
+	const Bootstrap* it = library ? libraryTable.entries : table.entries;
 	for (int i=0;i<kBootstrapCount;i++)
 	{
 		if ((it->platform == platform) &&
@@ -121,6 +159,13 @@ bool IsLPackerExecutable(const uint8_t* data, int size, Platform_e platform)
 {
 	if (platform == eAmiga)
 	{
+		// The Resident slot and offset are patched per library. Recognize the
+		// fixed prefix without comparing those operands.
+		if (size >= int(sizeof(sAmigaLibraryEntry)) &&
+			memcmp(data, sAmigaLibraryEntry, 26) == 0 &&
+			memcmp(data + 36, sAmigaLibraryEntry + 36,
+				sizeof(sAmigaLibraryEntry) - 36) == 0)
+			return true;
 		// Recognize both old stubs and wrapped stubs, including -text output.
 		// Skip the text prefix because its length placeholder is patched.
 		for (int i = 0; i < kBootstrapCount; i++)

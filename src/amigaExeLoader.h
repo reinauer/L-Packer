@@ -58,6 +58,7 @@ private:
 	void updateMergeOffsets(const AmigaExePack& elf, eHunkType t, uint32_t* lpackHunkPos, bool containsByte);
 	bool hunkMerge(const AmigaExePack& elf, const Hunk& hunk);
 	bool insertReloc();
+	bool findLibraryResident(const AmigaExePack& elf);
 	int memToSlot(eMemoryType m) const { return (m == m_codeMemType) ? 0 : 1; }
 	bool slotIsChip(int slot) const { return m_slotIsChip[slot]; }
 	eMemoryType slotToMem(int slot) const { return slotIsChip(slot)?eChipMemory:eAnyMemory; };
@@ -66,4 +67,6 @@ private:
 	lpackHunk m_hunks[2];
 	eMemoryType m_codeMemType;
 	bool m_slotIsChip[2];
+	int m_residentSlot = 0;
+	uint32_t m_residentOffset = 0;
 };

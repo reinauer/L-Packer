@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <string.h>
 #include <time.h>
+#include <vector>
 #include "lpacker.h"
 #include "byteStream.h"
 #include "amigaExeLoader.h"
@@ -170,6 +171,86 @@ bool lpackElf::insertReloc()
 	return true;
 }
 
+static uint32_t ReadLongBE(const uint8_t* p)
+{
+	return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+		(uint32_t(p[2]) << 8) | p[3];
+}
+
+// Resolve a pointer using the input's relocation records, before hunk merging.
+// A byte pattern alone is insufficient to identify a Resident's self pointer.
+static bool ResolvePointer(const AmigaExePack& elf, const Hunk& hunk,
+	uint32_t field, uint32_t& targetHunk, uint32_t& targetOffset)
+{
+	if (hunk.m_dataSize < 4 || field > hunk.m_dataSize - 4)
+		return false;
+	int matches = 0;
+	for (int r = 0; r < hunk.m_relocListCount; r++)
+	{
+		const RelocList& reloc = hunk.m_relocLists[r];
+		for (int i = 0; i < reloc.relocCount; i++)
+		{
+			if (reloc.offsets[i] == field)
+			{
+				targetHunk = reloc.referToHunkId;
+				matches++;
+			}
+		}
+	}
+	if (matches != 1 || targetHunk >= elf.GetHunkCount())
+		return false;
+	targetOffset = ReadLongBE(hunk.m_data + field);
+	return targetOffset < elf.GetHunk(targetHunk).m_dataSize;
+}
+
+bool lpackElf::findLibraryResident(const AmigaExePack& elf)
+{
+	for (uint32_t h = 0; h < elf.GetHunkCount(); h++)
+	{
+		const Hunk& hunk = elf.GetHunk(h);
+		for (uint32_t offset = 0; offset + 26 <= hunk.m_dataSize; offset += 2)
+		{
+			const uint8_t* tag = hunk.m_data + offset;
+			uint32_t target = 0, address = 0;
+			if (tag[0] != 0x4a || tag[1] != 0xfc ||
+				!ResolvePointer(elf, hunk, offset + 2, target, address) ||
+				target != h || address != offset)
+				continue;
+			if (tag[12] != 9) // NT_LIBRARY
+			{
+				printf("ERROR: -library requires the first Resident to be NT_LIBRARY\n");
+				return false;
+			}
+			if (!ResolvePointer(elf, hunk, offset + 14, target, address))
+			{
+				printf("ERROR: Library Resident has no relocatable name\n");
+				return false;
+			}
+			const Hunk& names = elf.GetHunk(target);
+			if (!names.m_data[address] || !memchr(names.m_data + address, 0,
+				names.m_dataSize - address))
+			{
+				printf("ERROR: Library Resident name is empty or unterminated\n");
+				return false;
+			}
+			const uint32_t initSize = (tag[10] & 0x80) ? 16 : 2;
+			if (!ResolvePointer(elf, hunk, offset + 22, target, address) ||
+				(address & 1) || elf.GetHunk(target).m_dataSize - address < initSize)
+			{
+				printf("ERROR: Library Resident has an invalid initialization pointer\n");
+				return false;
+			}
+			m_residentSlot = memToSlot(hunk.m_memType);
+			m_residentOffset = m_mergeOffsets[h] + offset;
+			// RAMLIB initializes the first tag in segment order. Libraries can
+			// contain additional Residents that their own initializer handles.
+			return true;
+		}
+	}
+	printf("ERROR: -library requires a relocatable Resident tag\n");
+	return false;
+}
+
 bool lpackElf::Build(const AmigaExePack& elf, const Parameters& params)
 {
 	int hunkCount = elf.GetHunkCount();
@@ -195,6 +276,8 @@ bool lpackElf::Build(const AmigaExePack& elf, const Parameters& params)
 	m_slotIsChip[1] = !m_slotIsChip[0];
 
 	if (!buildMergeOffset(elf))
+		return false;
+	if (params.libraryMode && !findLibraryResident(elf))
 		return false;
 
 	uint32_t dataSize[2] = {};
@@ -292,7 +375,8 @@ bool lpackElf::Save(const char* fname, const Parameters& params)
 		return false;
 
 	assert(outBlobs[0].algo == outBlobs[1].algo);
-	const Bootstrap* bootstrap = GetRightBootstrap(eAmiga, outBlobs[0].algo, params.flash, params.IsText());
+	const Bootstrap* bootstrap = GetRightBootstrap(eAmiga, outBlobs[0].algo,
+		params.flash, params.IsText(), params.libraryMode);
 	if (nullptr == bootstrap)
 		return false;
 
@@ -366,7 +450,14 @@ bool lpackElf::Save(const char* fname, const Parameters& params)
 	out.AddLong(bootSize>>2);
 
 	const uint32_t bootCodeOffset = out.GetPos();
-	out.AddData(bootstrap->data, bootstrap->size);
+	if (params.libraryMode)
+	{
+		std::vector<uint8_t> code(bootstrap->data, bootstrap->data + bootstrap->size);
+		PatchAmigaLibraryBootstrap(code.data(), m_residentSlot, m_residentOffset);
+		out.AddData(code.data(), uint32_t(code.size()));
+	}
+	else
+		out.AddData(bootstrap->data, bootstrap->size);
 
 	// patch flash hx reg if needed
 	if ((params.flash) && (params.hwReg > 0))

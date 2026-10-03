@@ -32,6 +32,7 @@ void Help()
 		   "\t-flash : color flash when depacking\n"
 		   "\t-hwreg <hex> : flash hw reg (ex -hwreg 8240 (atari) or -hwreg 180 (amiga))\n"
 		   "\t-data : raw data mode (no executable)\n"
+		   "\t-library : pack an Amiga Resident library\n"
 		   "\t-deflate : include DEFLATE algorithm (by default)\n"
 		   "\t-zx0 : include ZX0 algorithm (by default)\n"
 		   "\t-lz4 : include LZ4 algorithm (by default)\n"
@@ -128,6 +129,10 @@ bool	ParseArgs(int argc, char* argv[], Parameters& params)
 				}
 				argId++;
 			}
+			else if (0 == strcmp(argv[argId], "-library"))
+			{
+				params.libraryMode = true;
+			}
 			else if (0 == strcmp(argv[argId], "-data"))
 			{
 				params.dataMode = true;
@@ -161,6 +166,13 @@ bool	ParseArgs(int argc, char* argv[], Parameters& params)
 	if (params.pad && (params.targetSize <= 0))
 	{
 		printf("ERROR: You should specify a target size (-t) when using -pad\n");
+		return false;
+	}
+
+	if (params.libraryMode && (params.dataMode || params.IsText() ||
+		params.flash || params.hwReg))
+	{
+		printf("ERROR: -library cannot be combined with -data, -text, -flash or -hwreg\n");
 		return false;
 	}
 
@@ -229,6 +241,10 @@ int main(int argc, char* argv[])
 							ret = 0;		// ok
 					}
 				}
+			}
+			else if (params.libraryMode)
+			{
+				printf("ERROR: -library requires an Amiga Hunk library\n");
 			}
 			else if (binFile.IsAtariExecutable())
 			{
