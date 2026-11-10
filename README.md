@@ -89,6 +89,12 @@ data mode cannot be combined with library mode. All three compression
 algorithms and target-size padding remain available. Ordinary CLI execution
 of the packed library returns an error without initializing it.
 
+Library mode keeps a NUL-terminated `$VER:` tag in the bootstrap hunk,
+before the compressed data, so `Version` can read it without loading the
+library. It copies the first terminated input tag, or adds the marker to
+the first Resident's ID string when no tag exists. The added bytes count
+toward algorithm selection, target-size limits, and padding.
+
 Loading relies on RAMLIB's fallback that calls the first segment's entry
 when no Resident is found in the loaded image, passing the segment-list
 BPTR in A0. This path has been verified in the V40 OS source. The entry then

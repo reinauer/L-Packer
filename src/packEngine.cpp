@@ -148,7 +148,7 @@ int RoundTo(int size, int align)
 	return (size + align -1) & (-align);
 }
 
-int ComputeFinalExeSize(Platform_e platform, const Bootstrap* bootstrap, const OutputBlob* packedChunks, int chunkCount, const Parameters& params)
+int ComputeFinalExeSize(Platform_e platform, const Bootstrap* bootstrap, const OutputBlob* packedChunks, int chunkCount, const Parameters& params, uint32_t extraBootSize)
 {
 	int size = 0;
 	switch (platform)
@@ -161,7 +161,7 @@ int ComputeFinalExeSize(Platform_e platform, const Bootstrap* bootstrap, const O
 			break;
 		}
 		case Platform_e::eAmiga:
-			size += RoundTo(bootstrap->size + params.text.GetSize(),4);
+			size += RoundTo(bootstrap->size + params.text.GetSize() + extraBootSize,4);
 			for (int c = 0; c < chunkCount; c++)
 				size += 2 * 4 + RoundTo(packedChunks[c].packedSize, 4);
 			size += kAmigaElfAddSize;
@@ -177,7 +177,7 @@ int ComputeFinalExeSize(Platform_e platform, const Bootstrap* bootstrap, const O
 }
 
 
-int multiPackAndKeepBest(Platform_e platform, const InputBlob* inputArray, int count, OutputBlob* outputArray, const Parameters& params)
+int multiPackAndKeepBest(Platform_e platform, const InputBlob* inputArray, int count, OutputBlob* outputArray, const Parameters& params, uint32_t extraBootSize)
 {
 
 	OutputBlob* blobs = (OutputBlob*)malloc(count * kMaxAlgorithm * sizeof(OutputBlob));
@@ -228,7 +228,7 @@ int multiPackAndKeepBest(Platform_e platform, const InputBlob* inputArray, int c
 			return -1;
 
 
-		uint32_t total = ComputeFinalExeSize(platform, bootstrap, blobs + i * count, count, params);
+		uint32_t total = ComputeFinalExeSize(platform, bootstrap, blobs + i * count, count, params, extraBootSize);
 		int totalTime = 0;
 		for (int c = 0; c < count; c++)
 			totalTime += blobs[i * count + c].timeMs;

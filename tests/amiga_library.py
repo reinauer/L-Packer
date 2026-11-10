@@ -16,7 +16,11 @@ from machine68k import CPUType, Machine, Register
 from amiga_cli import load_packed, longs
 
 
-def fixture(autoinit=True, chip=False, failure=False, invalid=None):
+VERSION = b"test.library 42.7 (9.11.2026)\r\n"
+
+
+def fixture(autoinit=True, chip=False, failure=False, invalid=None, ver_tag=False,
+            id_string=VERSION):
     # Ordinary executable entry must not run: it records an error and returns.
     code = bytes.fromhex("21fc00000001080c70ff4e75")
     code += bytes(-len(code) % 4)
@@ -56,7 +60,7 @@ def fixture(autoinit=True, chip=False, failure=False, invalid=None):
     elif invalid == "device":
         data[tag_offset + 12] = 3
     elif invalid == "name":
-        data[tag_offset + 14:tag_offset + 18] = longs(len(data))
+        data[tag_offset + 14:tag_offset + 18] = longs(0xfffffffe)
     elif invalid == "init":
         data[tag_offset + 22:tag_offset + 26] = longs(0xfffffffe)
     elif invalid == "multiple":
@@ -65,6 +69,18 @@ def fixture(autoinit=True, chip=False, failure=False, invalid=None):
         data[other + 2:other + 6] = longs(other)
         relocs[1].append(other + 2)
         data += bytes(-len(data) % 4)
+    id_offset = len(data)
+    data += id_string + b"\0"
+    data[tag_offset + 18:tag_offset + 22] = longs(id_offset)
+    if ver_tag:
+        # Explicit file metadata takes precedence over the Resident ID.
+        data += b"\0$VER: " + VERSION.replace(b"42.7", b"42.8") + b"\0"
+    if invalid == "id_pointer":
+        data[tag_offset + 18:tag_offset + 22] = longs(len(data) + 4)
+    elif invalid == "id_unterminated":
+        data[id_offset:] = b"X" * (len(data) - id_offset)
+        data += b"X" * (-len(data) % 4)
+    data += bytes(-len(data) % 4)
     flag = (1 << 30) if chip else 0
     image = longs(1011, 0, 3, 0, 2, len(code) // 4,
                   flag | (len(data) // 4), flag | 32)
@@ -119,6 +135,8 @@ def execute(image, metadata, autoinit, chip, failure, version, cli=False):
             assert mem.r32(resident + 2) == resident
             assert mem.r8(resident + 12) == 9
             assert mem.r32(resident + 14) == data_base + name_offset
+            id_address = mem.r32(resident + 18)
+            assert bytes(mem.r_block(id_address, len(VERSION) + 1)) == VERSION + b"\0"
             assert mem.r8(resident + 10) == (0x80 if autoinit else 0)
             hook = mem.r32(resident + 22)
             if autoinit:
@@ -184,6 +202,15 @@ def execute(image, metadata, autoinit, chip, failure, version, cli=False):
         machine.cleanup()
 
 
+def check_version(image, expected):
+    # Version uses the first marker, including one inside compressed bytes.
+    start = image.index(b"$VER:")
+    end = image.index(b"\0", start)
+    assert image[start:end] == b"$VER: " + expected
+    boot_size = struct.unpack_from(">I", image, 36)[0] * 4
+    assert 40 <= start < end < 40 + boot_size
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packer", type=Path)
@@ -200,6 +227,7 @@ def main():
             subprocess.run([packer, str(source), str(packed), "-library", "-" + algo],
                            check=True, capture_output=True)
             image = packed.read_bytes()
+            check_version(image, VERSION)
             for version in (34, 37):
                 execute(image, metadata, autoinit, chip, failure, version)
                 count += 1
@@ -209,6 +237,23 @@ def main():
                 result = subprocess.run([packer, str(packed), str(root / "repacked"),
                                          *options], capture_output=True, text=True)
                 assert result.returncode != 0 and "already packed" in result.stdout
+        for algo in ("zx0", "lz4", "deflate"):
+            original, *metadata = fixture(ver_tag=True)
+            source.write_bytes(original)
+            subprocess.run([packer, str(source), str(packed), "-library", "-" + algo],
+                           check=True, capture_output=True)
+            image = packed.read_bytes()
+            check_version(image, VERSION.replace(b"42.7", b"42.8"))
+            execute(image, metadata, True, False, False, 37)
+        # Missing or unterminated optional ID strings must not be read past
+        # their hunk, and must not prevent otherwise valid libraries packing.
+        for invalid in ("id_pointer", "id_unterminated"):
+            source.write_bytes(fixture(invalid=invalid)[0])
+            subprocess.run([packer, str(source), str(packed), "-library", "-zx0"],
+                           check=True, capture_output=True)
+            image = packed.read_bytes()
+            boot_size = struct.unpack_from(">I", image, 36)[0] * 4
+            assert b"$VER:" not in image[40:40 + boot_size]
         # Additional embedded Residents must not change selection of the first.
         original, *metadata = fixture(invalid="multiple")
         source.write_bytes(original)
@@ -232,12 +277,21 @@ def main():
         result = subprocess.run([packer, str(source), str(packed), "-library"],
                                 capture_output=True, text=True)
         assert result.returncode != 0 and "requires an Amiga" in result.stdout
+        # Highly compressible metadata still counts in full toward -target.
+        source.write_bytes(fixture(id_string=VERSION + b"X" * 1024)[0])
+        output = root / "too-large.library"
+        result = subprocess.run([packer, str(source), str(output), "-library",
+                                 "-target", "1", "-pad"],
+                                capture_output=True, text=True)
+        assert result.returncode != 0 and "target" in result.stdout
+        assert not output.exists()
         source.write_bytes(fixture()[0])
         subprocess.run([packer, str(source), str(packed), "-library", "-target", "4",
                         "-pad"], check=True, capture_output=True)
         assert packed.stat().st_size == 4096
+        check_version(packed.read_bytes(), VERSION)
         execute(packed.read_bytes(), fixture()[1:], True, False, False, 37)
-    print(f"PASS: {count} library startup cases; validation, repacking and padding")
+    print(f"PASS: {count} library startup cases; version tags, validation, repacking and padding")
 
 
 if __name__ == "__main__":

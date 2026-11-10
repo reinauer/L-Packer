@@ -67,6 +67,7 @@ private:
 	lpackHunk m_hunks[2];
 	eMemoryType m_codeMemType;
 	bool m_slotIsChip[2];
+	ByteStream m_versionTag;
 	int m_residentSlot = 0;
 	uint32_t m_residentOffset = 0;
 };

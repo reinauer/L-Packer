@@ -240,6 +240,47 @@ bool lpackElf::findLibraryResident(const AmigaExePack& elf)
 				printf("ERROR: Library Resident has an invalid initialization pointer\n");
 				return false;
 			}
+			// Version scans the file without depacking it. A literal $VER:
+			// in compressed data may otherwise expose a corrupted string.
+			const uint8_t* version = nullptr;
+			size_t versionSize = 0;
+			for (uint32_t v = 0; v < elf.GetHunkCount() && !version; v++)
+			{
+				const Hunk& strings = elf.GetHunk(v);
+				for (uint32_t p = 0; p + 5 < strings.m_dataSize; p++)
+				{
+					const uint8_t* start = strings.m_data + p;
+					if (memcmp(start, "$VER:", 5) != 0)
+						continue;
+					const uint8_t* end = static_cast<const uint8_t*>(
+						memchr(start, 0, strings.m_dataSize - p));
+					if (end && end > start + 5)
+					{
+						version = start;
+						versionSize = end - start + 1;
+						break;
+					}
+				}
+			}
+			// Older libraries can have only a Resident ID string.
+			if (!version && ResolvePointer(elf, hunk, offset + 18, target, address))
+			{
+				const Hunk& strings = elf.GetHunk(target);
+				const uint8_t* start = strings.m_data + address;
+				const uint8_t* end = static_cast<const uint8_t*>(
+					memchr(start, 0, strings.m_dataSize - address));
+				if (end && end > start)
+				{
+					m_versionTag.AddByte(0);
+					m_versionTag.AddData("$VER: ", 6);
+					version = start;
+					versionSize = end - start + 1;
+				}
+			}
+			else if (version)
+				m_versionTag.AddByte(0);
+			if (version)
+				m_versionTag.AddData(version, uint32_t(versionSize));
 			m_residentSlot = memToSlot(hunk.m_memType);
 			m_residentOffset = m_mergeOffsets[h] + offset;
 			// RAMLIB initializes the first tag in segment order. Libraries can
@@ -370,7 +411,7 @@ bool lpackElf::Save(const char* fname, const Parameters& params)
 
 	OutputBlob outBlobs[2];
 
-	int bestSize = multiPackAndKeepBest(eAmiga, blobs, 2, outBlobs, params);
+	int bestSize = multiPackAndKeepBest(eAmiga, blobs, 2, outBlobs, params, m_versionTag.GetSize());
 	if (bestSize < 0)
 		return false;
 
@@ -390,7 +431,7 @@ bool lpackElf::Save(const char* fname, const Parameters& params)
 		roundedHunkSize += 2*4;	// 2 LONG before packed data
 		expectedFileSize += roundedHunkSize;
 	}
-	const uint32_t bootAndTextSize = bootstrap->size + params.text.GetSize();
+	const uint32_t bootAndTextSize = bootstrap->size + params.text.GetSize() + m_versionTag.GetSize();
 	expectedFileSize += (bootAndTextSize + 3)&(-4);
 
 	// extend a bit allocated size if needed (for depack in place)
@@ -482,6 +523,8 @@ bool lpackElf::Save(const char* fname, const Parameters& params)
 		}
 	}
 
+	// Keep the readable tag ahead of any accidental markers in packed data.
+	out.AddData(m_versionTag.GetRawArray(), m_versionTag.GetSize());
 	out.Complete(bootAndTextSize, 4);
 
 	const int addedPad = RoundTo(padLen, 4);
@@ -528,7 +571,7 @@ bool lpackElf::Save(const char* fname, const Parameters& params)
 
 	bool ret = false;
 	int realSize = out.GetSize();
-	int expectedSize = ComputeFinalExeSize(eAmiga, bootstrap, outBlobs, 2, params) + addedPad;
+	int expectedSize = ComputeFinalExeSize(eAmiga, bootstrap, outBlobs, 2, params, m_versionTag.GetSize()) + addedPad;
 	if (realSize == expectedSize)
 	{
 		printf("Writing \"%s\"\n", fname);

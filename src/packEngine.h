@@ -48,6 +48,6 @@ struct OutputBlob
 struct Parameters;
 struct Bootstrap;
 
-int multiPackAndKeepBest(Platform_e platform, const InputBlob* inputArray, int count, OutputBlob* outputArray, const Parameters& params);
-int ComputeFinalExeSize(Platform_e platform, const Bootstrap* bootstrap, const OutputBlob* packedChunks, int chunkCount, const Parameters& params);
+int multiPackAndKeepBest(Platform_e platform, const InputBlob* inputArray, int count, OutputBlob* outputArray, const Parameters& params, uint32_t extraBootSize = 0);
+int ComputeFinalExeSize(Platform_e platform, const Bootstrap* bootstrap, const OutputBlob* packedChunks, int chunkCount, const Parameters& params, uint32_t extraBootSize = 0);
 int RoundTo(int size, int align);
