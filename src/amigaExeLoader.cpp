@@ -203,6 +203,31 @@ static bool ResolvePointer(const AmigaExePack& elf, const Hunk& hunk,
 	return targetOffset < elf.GetHunk(targetHunk).m_dataSize;
 }
 
+// Version scans the file without depacking it. A literal $VER: in
+// compressed data may otherwise expose a corrupted string, so keep the
+// first terminated input tag readable in the bootstrap hunk.
+void lpackElf::findVersionTag(const AmigaExePack& elf)
+{
+	for (uint32_t h = 0; h < elf.GetHunkCount(); h++)
+	{
+		const Hunk& hunk = elf.GetHunk(h);
+		for (uint32_t p = 0; p + 5 < hunk.m_dataSize; p++)
+		{
+			const uint8_t* start = hunk.m_data + p;
+			if (memcmp(start, "$VER:", 5) != 0)
+				continue;
+			const uint8_t* end = static_cast<const uint8_t*>(
+				memchr(start, 0, hunk.m_dataSize - p));
+			if (end && end > start + 5)
+			{
+				m_versionTag.AddByte(0);
+				m_versionTag.AddData(start, uint32_t(end - start + 1));
+				return;
+			}
+		}
+	}
+}
+
 bool lpackElf::findLibraryResident(const AmigaExePack& elf)
 {
 	for (uint32_t h = 0; h < elf.GetHunkCount(); h++)
@@ -240,30 +265,9 @@ bool lpackElf::findLibraryResident(const AmigaExePack& elf)
 				printf("ERROR: Library Resident has an invalid initialization pointer\n");
 				return false;
 			}
-			// Version scans the file without depacking it. A literal $VER:
-			// in compressed data may otherwise expose a corrupted string.
-			const uint8_t* version = nullptr;
-			size_t versionSize = 0;
-			for (uint32_t v = 0; v < elf.GetHunkCount() && !version; v++)
-			{
-				const Hunk& strings = elf.GetHunk(v);
-				for (uint32_t p = 0; p + 5 < strings.m_dataSize; p++)
-				{
-					const uint8_t* start = strings.m_data + p;
-					if (memcmp(start, "$VER:", 5) != 0)
-						continue;
-					const uint8_t* end = static_cast<const uint8_t*>(
-						memchr(start, 0, strings.m_dataSize - p));
-					if (end && end > start + 5)
-					{
-						version = start;
-						versionSize = end - start + 1;
-						break;
-					}
-				}
-			}
 			// Older libraries can have only a Resident ID string.
-			if (!version && ResolvePointer(elf, hunk, offset + 18, target, address))
+			if (!m_versionTag.GetSize() &&
+				ResolvePointer(elf, hunk, offset + 18, target, address))
 			{
 				const Hunk& strings = elf.GetHunk(target);
 				const uint8_t* start = strings.m_data + address;
@@ -273,14 +277,9 @@ bool lpackElf::findLibraryResident(const AmigaExePack& elf)
 				{
 					m_versionTag.AddByte(0);
 					m_versionTag.AddData("$VER: ", 6);
-					version = start;
-					versionSize = end - start + 1;
+					m_versionTag.AddData(start, uint32_t(end - start + 1));
 				}
 			}
-			else if (version)
-				m_versionTag.AddByte(0);
-			if (version)
-				m_versionTag.AddData(version, uint32_t(versionSize));
 			m_residentSlot = memToSlot(hunk.m_memType);
 			m_residentOffset = m_mergeOffsets[h] + offset;
 			// RAMLIB initializes the first tag in segment order. Libraries can
@@ -318,6 +317,7 @@ bool lpackElf::Build(const AmigaExePack& elf, const Parameters& params)
 
 	if (!buildMergeOffset(elf))
 		return false;
+	findVersionTag(elf);
 	if (params.libraryMode && !findLibraryResident(elf))
 		return false;
 

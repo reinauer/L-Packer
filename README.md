@@ -65,6 +65,15 @@ Pack `Colombia.exe` for the 64 KiB demo category and pad the output to 64 KiB wi
   L-Packer Colombia.exe Colombia_packed.exe -target 64 -pad
 ````
 
+## Amiga version tags
+
+`Version` reads the first `$VER:` marker in a file without loading it, and
+compressed data can contain a literal marker followed by compressed bytes.
+L-Packer therefore copies the first NUL-terminated `$VER:` tag of an Amiga
+executable or library into the bootstrap hunk, ahead of the compressed
+data. The copied bytes count toward algorithm selection, target-size
+limits, and padding.
+
 ## Amiga libraries
 
 Pack a disk-based Amiga library with a Resident/ROMTag:
@@ -89,11 +98,8 @@ data mode cannot be combined with library mode. All three compression
 algorithms and target-size padding remain available. Ordinary CLI execution
 of the packed library returns an error without initializing it.
 
-Library mode keeps a NUL-terminated `$VER:` tag in the bootstrap hunk,
-before the compressed data, so `Version` can read it without loading the
-library. It copies the first terminated input tag, or adds the marker to
-the first Resident's ID string when no tag exists. The added bytes count
-toward algorithm selection, target-size limits, and padding.
+When the input has no `$VER:` tag, library mode adds the marker to the
+first Resident's ID string and keeps that as the tag (see below).
 
 Loading relies on RAMLIB's fallback that calls the first segment's entry
 when no Resident is found in the loaded image, passing the segment-list
@@ -123,7 +129,8 @@ python3 tests/amiga_library.py build/L-Packer
 The test executes all three depackers on an emulated 68000, with and without
 text and flashing. It checks argument registers, entry/return stack, return
 code, relocations, and BSS clearing using stubbed OS calls; no Amiga ROM is
-required.
+required. It also checks that the readable version tag comes first and
+counts toward target-size padding.
 
 The library test covers autoinit and custom initialization, failed
 initialization, CHIP and merged ANY-memory Resident placement, callee-saved

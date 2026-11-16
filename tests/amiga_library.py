@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 
 from machine68k import CPUType, Machine, Register
-from amiga_cli import load_packed, longs
+from amiga_cli import check_version, load_packed, longs
 
 
 VERSION = b"test.library 42.7 (9.11.2026)\r\n"
@@ -200,15 +200,6 @@ def execute(image, metadata, autoinit, chip, failure, version, cli=False):
         assert bytes(mem.r_block(bss_start, 128)) == bytes(128)
     finally:
         machine.cleanup()
-
-
-def check_version(image, expected):
-    # Version uses the first marker, including one inside compressed bytes.
-    start = image.index(b"$VER:")
-    end = image.index(b"\0", start)
-    assert image[start:end] == b"$VER: " + expected
-    boot_size = struct.unpack_from(">I", image, 36)[0] * 4
-    assert 40 <= start < end < 40 + boot_size
 
 
 def main():

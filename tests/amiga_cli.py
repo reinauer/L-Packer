@@ -15,14 +15,28 @@ import tempfile
 from machine68k import CPUType, Machine, Register
 
 
+VERSION = b"cli_test 1.2 (15.11.2026)\r\n"
+
+
 def longs(*values):
     return struct.pack(">" + "I" * len(values), *values)
 
 
-def fixture():
+def check_version(image, expected):
+    # Version uses the first marker, including one inside compressed bytes.
+    start = image.index(b"$VER:")
+    end = image.index(b"\0", start)
+    assert image[start:end] == b"$VER: " + expected
+    boot_size = struct.unpack_from(">I", image, 36)[0] * 4
+    assert 40 <= start < end < 40 + boot_size
+
+
+def fixture(ver_tag=True):
     # Record incoming D0, A0 and SP, then return 37 to the caller.
     code = bytes.fromhex("23c00000080023c80000080423cf0000080870254e75")
     code += b"CLI preservation test data! " * 32
+    if ver_tag:
+        code += b"\0$VER: " + VERSION + b"\0"
     code += bytes(-len(code) % 4)
     code += longs(0, 0)
     chip = b"CHIP" + longs(0)
@@ -144,6 +158,7 @@ def main():
             if text:
                 command += ["-text", str(message)]
             subprocess.run(command, check=True, capture_output=True)
+            check_version(packed.read_bytes(), VERSION)
             for version, arguments in itertools.product(
                     (34, 37), (b"SCSI FULL\n", b"", None)):
                 execute(packed.read_bytes(), code, chip, version, arguments,
@@ -154,7 +169,24 @@ def main():
                 [str(packer), str(packed), str(root / "repacked"), "-" + algo],
                 capture_output=True, text=True)
             assert "already packed" in result.stdout, result.stdout
-    print(f"PASS: {count} Amiga startup cases; all 12 variants reject repacking")
+        # The copied tag counts toward -target and stays ahead of padding.
+        packed = root / "padded"
+        subprocess.run([str(packer), str(source), str(packed), "-zx0",
+                        "-target", "4", "-pad"], check=True, capture_output=True)
+        assert packed.stat().st_size == 4096
+        check_version(packed.read_bytes(), VERSION)
+        execute(packed.read_bytes(), code, chip, 37, b"", b"")
+        # Without an input tag, no marker is added to the bootstrap hunk.
+        untagged, code, chip = fixture(ver_tag=False)
+        source.write_bytes(untagged)
+        subprocess.run([str(packer), str(source), str(packed), "-zx0"],
+                       check=True, capture_output=True)
+        image = packed.read_bytes()
+        boot_size = struct.unpack_from(">I", image, 36)[0] * 4
+        assert b"$VER:" not in image[40:40 + boot_size]
+        execute(image, code, chip, 37, b"", b"")
+    print(f"PASS: {count} Amiga startup cases; all 12 variants keep the "
+          "version tag and reject repacking")
 
 
 if __name__ == "__main__":
